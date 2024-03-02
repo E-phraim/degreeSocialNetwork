@@ -5,10 +5,14 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	_ "github.com/go-sql-driver/mysql"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+
+	Password "degreenetwork/api/password"
+	Documentation "degreenetwork/api/specification"
 
 	"github.com/gorilla/mux"
 )
@@ -21,6 +25,11 @@ type Count struct {
 	DatabaseCount int
 }
 
+type CreateResponse struct {
+	Error     string `json:"error"`
+	ErrorCode int    `json:"code"`
+}
+
 type UpdateResponse struct {
 	Error     string `json:"error"`
 	ErrorCode int    `json:"error_code"`
@@ -31,11 +40,17 @@ type Users struct {
 }
 
 type User struct {
-	ID    int    `json:"id"`
-	Name  string `json:"username"`
-	Email string `json:"email"`
-	First string `json:"first"`
-	Last  string `json:"last"`
+	ID       int    `json:"id"`
+	Name     string `json:"username"`
+	Email    string `json:"email"`
+	First    string `json:"first"`
+	Last     string `json:"last"`
+	Password string `json:"password"`
+	Salt     string `json:"salt"`
+	Hash     string `json:"hash"`
+}
+
+type DocMethod interface {
 }
 
 func Init() {
@@ -43,6 +58,7 @@ func Init() {
 	Routes.HandleFunc("/api/users", CreateUser).Methods("POST")
 	Routes.HandleFunc("/api/users", GetUsers).Methods("GET")
 	Routes.HandleFunc("/api/users/{id:[0-9]+}", UsersUpdate).Methods("PUT")
+	Routes.HandleFunc("/api/users", UsersInfo).Methods("OPTIONS")
 }
 
 func ErrorMessages(err int64) (int, int, string) {
@@ -64,7 +80,11 @@ func ErrorMessages(err int64) (int, int, string) {
 }
 
 func GetFormat(r *http.Request) {
-	Format = r.URL.Query()["format"][0]
+	if len(r.URL.Query()["format"]) > 0 {
+		Format = r.URL.Query()["Format"][0]
+	} else {
+		Format = "json"
+	}
 }
 
 func SetFormat(data interface{}) []byte {
@@ -87,25 +107,49 @@ func dbErrorParse(err string) (string, int64) {
 	return errorMessage, errorCode
 }
 
+func UsersInfo(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("Reached here")
+	w.Header().Set("Allow", "DELETE,GET,HEAD,OPTIONS,POST,PUT")
+
+	UserDocumentation := []DocMethod{}
+	UserDocumentation = append(UserDocumentation, Documentation.UserPOST)
+	UserDocumentation = append(UserDocumentation, Documentation.UserOPTIONS)
+	fmt.Println(UserDocumentation)
+	outpuut := SetFormat(UserDocumentation)
+	// fmt.Println(UserDocumentation)
+	// fmt.Println(outpuut)
+	fmt.Fprintln(w, string(outpuut))
+
+}
+
 func CreateUser(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "http://localhost:9000")
+	w.Header().Set("Access-Control-Allow-Origin", "http://localhost:5501")
 	NewUser := User{}
 	NewUser.Name = r.FormValue("user")
 	NewUser.Email = r.FormValue("email")
 	NewUser.First = r.FormValue("first")
 	NewUser.Last = r.FormValue("last")
-
+	NewUser.Password = r.FormValue("password")
+	salt, hash := Password.ReturnPassword(NewUser.Password)
+	fmt.Println(salt, hash)
 	output, err := json.Marshal(NewUser)
 	fmt.Println(string(output))
 	if err != nil {
-		fmt.Println("something went wrong")
+		fmt.Println("something went wrong ay marshal output")
 	}
 
-	sql := "INSERT INTO users set user_nickname= '" + NewUser.Name + "', user_first='" + NewUser.First + "', user_last='" + NewUser.Last + "', user_email='" + NewUser.Email + "'"
+	Response := CreateResponse{}
+
+	sql := "INSERT INTO users set user_nickname= '" + NewUser.Name + "', user_first='" + NewUser.First + "', user_last='" + NewUser.Last + "', user_email='" + NewUser.Email + "'" + ", user_password='" + hash + "', user_salt='" + salt + "'"
 	q, err := DB.Exec(sql)
 
 	if err != nil {
-		fmt.Println(err)
+		errorMessage, errorCode := dbErrorParse(err.Error())
+		fmt.Println(errorMessage)
+		error, httpCode, msg := ErrorMessages(errorCode)
+		Response.Error = msg
+		Response.ErrorCode = error
+		http.Error(w, "Conflict", httpCode)
 	}
 	fmt.Println(q)
 }

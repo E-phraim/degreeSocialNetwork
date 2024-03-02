@@ -1,0 +1,43 @@
+package main
+
+import (
+	"fmt"
+	"log"
+	"net/http"
+	"sync"
+)
+
+const (
+	serverName   = "localhost"
+	SSLport      = ":443"
+	HTTPPort     = ":8080"
+	SSLProtocol  = "https://"
+	HTTPProtocol = "http://"
+)
+
+func secureRequest(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprintln(w, "welcome at port 443, almost secure")
+}
+
+func redirectNonSecure(w http.ResponseWriter, r *http.Request) {
+	log.Println("Non-secure request init, redirecting")
+	redirectURL := SSLProtocol + serverName + r.RequestURI
+	http.Redirect(w, r, redirectURL, http.StatusOK)
+}
+
+func main() {
+	wg := sync.WaitGroup{}
+	log.Println("starting redirection accessing http:")
+
+	wg.Add(1)
+	go func() {
+		http.ListenAndServe(HTTPPort, http.HandlerFunc(redirectNonSecure))
+		wg.Done()
+	}()
+	wg.Add(1)
+	go func() {
+		http.ListenAndServeTLS(SSLport, "cert.pem", "key.pem", http.HandlerFunc(secureRequest))
+		wg.Done()
+	}()
+	wg.Wait()
+}
