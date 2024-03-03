@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
-	_ "github.com/go-sql-driver/mysql"
+	"html/template"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
 
+	_ "github.com/go-sql-driver/mysql"
+
 	Password "degreenetwork/api/password"
+	"degreenetwork/api/pseudoauth"
 	Documentation "degreenetwork/api/specification"
 
 	"github.com/gorilla/mux"
@@ -50,6 +53,71 @@ type User struct {
 	Hash     string `json:"hash"`
 }
 
+type Page struct {
+	Title        string
+	Authorize    bool
+	Authenticate bool
+	Application  string
+	Action       string
+	ConsumerKey  string
+}
+
+func ApplicationAuthenticate(w http.ResponseWriter, r *http.Request) {
+	Authorize := Page{}
+	Authorize.Authenticate = true
+	Authorize.Title = "Login"
+	Authorize.Application = ""
+	Authorize.Action = "/authorize"
+
+	tpl := template.Must(template.New("main").ParseFiles("authorize.html"))
+	tpl.ExecuteTemplate(w, "authorize.html", Authorize)
+}
+
+func ApplicationAuthorize(w http.ResponseWriter, r *http.Request) {
+	username := r.FormValue("username")
+	password := r.FormValue("password")
+	allow := r.FormValue("authorize")
+
+	var dbPassword string
+	var dbSalt string
+	var dbUID string
+
+	uerr := DB.QueryRow("SELECT user_password, user_salt, user_id from users where user_nickname=?", username).Scan(&dbPassword, &dbSalt, &dbUID)
+	if uerr != nil {
+	}
+
+	consumerKey := r.FormValue("consumer_key")
+	fmt.Println(consumerKey)
+
+	var CallbackURL string
+	var appUID string
+	err := DB.QueryRow("SELECT user_id, callback_url from api_credentials where consumer_key=?", consumerKey).Scan(&appUID, &CallbackURL)
+	if err != nil {
+		fmt.Println(err.Error())
+		return
+	}
+
+	expectedPassword := Password.GenerateHash(dbSalt, password)
+	if dbPassword == expectedPassword && allow == "1" {
+		requestToken := pseudoauth.GenerateToken()
+
+		authorizeSQL := "INSERT INTO api_tokens set application_user_id" + appUID + ", user_id=" + dbUID + ", api_token_key='" + requestToken + "' ON DUPLICATE KEY UPDATE user_id=user_id"
+
+		q, connectErr := DB.Exec(authorizeSQL)
+		if connectErr != nil {
+
+		} else {
+			fmt.Println(q)
+		}
+		redirectURL := CallbackURL + "?request_token=" + requestToken
+		fmt.Println(redirectURL)
+		http.Redirect(w, r, redirectURL, http.StatusAccepted)
+	} else {
+		fmt.Println(dbPassword, expectedPassword)
+		http.Redirect(w, r, "/authorize", http.StatusUnauthorized)
+	}
+}
+
 type DocMethod interface {
 }
 
@@ -59,6 +127,9 @@ func Init() {
 	Routes.HandleFunc("/api/users", GetUsers).Methods("GET")
 	Routes.HandleFunc("/api/users/{id:[0-9]+}", UsersUpdate).Methods("PUT")
 	Routes.HandleFunc("/api/users", UsersInfo).Methods("OPTIONS")
+
+	Routes.HandleFunc("/authorize", ApplicationAuthorize).Methods("POST")
+	Routes.HandleFunc("/authorize", ApplicationAuthenticate).Methods("GET")
 }
 
 func ErrorMessages(err int64) (int, int, string) {
@@ -105,6 +176,42 @@ func dbErrorParse(err string) (string, int64) {
 	Code := strings.Split(Parts[0], "Error ")
 	errorCode, _ := strconv.ParseInt(Code[1], 10, 32)
 	return errorMessage, errorCode
+}
+
+func CheckCredentials(w http.ResponseWriter, r *http.Request) {
+	var Credentials string
+	Response := CreateResponse{}
+	consumerKey := r.FormValue("consumer_key")
+	fmt.Println(consumerKey)
+	timestamp := r.FormValue("timestamp")
+	signature := r.FormValue("signature")
+	nonce := r.FormValue("nonce")
+	err := DB.QueryRow("SELECT consumer_secret from api_credentials where consumer_key=?", consumerKey).Scan(&Credentials)
+	if err != nil {
+		error, httpCode, msg := ErrorMessages(404)
+		log.Println(error)
+		log.Println(w, msg, httpCode)
+		Response.Error = msg
+		Response.ErrorCode = httpCode
+		http.Error(w, msg, httpCode)
+		return
+	}
+
+	token, err := pseudoauth.ValidateSignature(consumerKey, Credentials, timestamp, nonce, signature, 0)
+	if err != nil {
+		error, httpCode, msg := ErrorMessages(401)
+		log.Println(error)
+		log.Println(w, msg, httpCode)
+		Response.Error = msg
+		Response.ErrorCode = httpCode
+		http.Error(w, msg, httpCode)
+		return
+	}
+
+	AccessRequest := OauthAccessResponse{}
+	AccessRequest.AccessToken = token.AccessToken
+	output := SetFormat(AccessRequest)
+	fmt.Println(w, string(output))
 }
 
 func UsersInfo(w http.ResponseWriter, r *http.Request) {
